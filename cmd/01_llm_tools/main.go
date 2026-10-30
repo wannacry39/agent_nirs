@@ -27,6 +27,10 @@ import (
 )
 
 func main() {
+	if os.Getenv("AGENT_EGRESS_POLICY") != "" {
+		cli.Fatal(fmt.Errorf("вариант 01 не подключает защиту; используйте вариант с харнессом"))
+	}
+	fmt.Fprintln(os.Stderr, "[egress] контроль исходящих данных выключен (вариант без харнесса)")
 	ctx := context.Background()
 	model := llm.NewFromEnv()
 

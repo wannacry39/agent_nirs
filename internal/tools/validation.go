@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 )
@@ -32,8 +33,13 @@ func validateValue(schema map[string]any, value any, path string) error {
 			return wrongType()
 		}
 	case "number", "integer":
-		// Аргументы разобраны encoding/json, поэтому числа имеют тип float64.
+		// Защищённый декодер сохраняет лексему числа для проверки утечек.
 		number, ok := value.(float64)
+		if n, isNumber := value.(json.Number); isNumber {
+			var err error
+			number, err = n.Float64()
+			ok = err == nil
+		}
 		if !ok || math.IsNaN(number) || math.IsInf(number, 0) || (typeName == "integer" && math.Trunc(number) != number) {
 			return wrongType()
 		}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/wannacry39/agent_nirs/internal/egress"
 	"github.com/wannacry39/agent_nirs/internal/tools"
 )
 
@@ -25,6 +26,7 @@ import (
 type Client struct {
 	url         string
 	transport   Transport
+	guard       *egress.Guard
 	operationMu sync.Mutex // вызов не должен попасть в середину переподключения
 
 	mu     sync.Mutex
@@ -46,7 +48,12 @@ func NewClient(url string) *Client {
 }
 
 // Connect — подключение к серверу: initialize, затем список инструментов.
-func (c *Client) Connect(ctx context.Context) error {
+func (c *Client) Connect(ctx context.Context) (err error) {
+	defer func() {
+		if c.guard != nil {
+			err = egress.SafeError(err)
+		}
+	}()
 	c.operationMu.Lock()
 	defer c.operationMu.Unlock()
 	if err := c.initialize(ctx); err != nil {
@@ -76,6 +83,11 @@ func (c *Client) initialize(ctx context.Context) error {
 		return errors.New("initialize: сервер не объявил возможность tools")
 	}
 	notification := Request{JSONRPC: "2.0", Method: "notifications/initialized"}
+	if c.guard != nil {
+		if err := c.checkParams(ctx, notification.Method, []byte(`{}`)); err != nil {
+			return err
+		}
+	}
 	if _, err := c.transport.Send(ctx, notification); err != nil {
 		return fmt.Errorf("notifications/initialized: %w", err)
 	}
@@ -103,6 +115,7 @@ func (c *Client) listTools(ctx context.Context) error {
 				Description: info.Description,
 				InputSchema: info.InputSchema,
 				Dangerous:   info.Dangerous(),
+				Destination: c.destination(),
 			})
 		}
 		if page.NextCursor == "" {
@@ -149,6 +162,9 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) too
 	}
 	raw, err := c.request(ctx, "tools/call", callToolParams{Name: name, Arguments: args})
 	if err != nil {
+		if c.guard != nil {
+			err = egress.SafeError(err)
+		}
 		return tools.Result{Content: "ошибка MCP: " + err.Error(), IsError: true}
 	}
 	var result callToolResult
@@ -168,6 +184,11 @@ func (c *Client) Call(ctx context.Context, name string, args map[string]any) too
 func (c *Client) Close(ctx context.Context) {
 	c.operationMu.Lock()
 	defer c.operationMu.Unlock()
+	if c.guard != nil {
+		if c.checkParams(ctx, "close", []byte(`{}`)) != nil {
+			return
+		}
+	}
 	c.transport.Close(ctx)
 }
 
@@ -196,6 +217,11 @@ func (c *Client) send(ctx context.Context, method string, params any) (json.RawM
 	rawParams, err := json.Marshal(params)
 	if err != nil {
 		return nil, err
+	}
+	if c.guard != nil {
+		if err := c.checkParams(ctx, method, rawParams); err != nil {
+			return nil, err
+		}
 	}
 	c.mu.Lock()
 	c.nextID++

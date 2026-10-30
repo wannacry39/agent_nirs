@@ -36,6 +36,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wannacry39/agent_nirs/internal/agentcontext"
+	"github.com/wannacry39/agent_nirs/internal/egress"
 	"github.com/wannacry39/agent_nirs/internal/llm"
 	"github.com/wannacry39/agent_nirs/internal/memory"
 	"github.com/wannacry39/agent_nirs/internal/skills"
@@ -81,6 +82,7 @@ const DefaultMaxRequestRunes = 2000
 // по умолчанию.
 type Config struct {
 	LLM          *llm.Client
+	Egress       *egress.Guard // одна политика для харнесса и всех сетевых клиентов
 	SystemPrompt string
 	Toolboxes    []tools.Toolbox // источники инструментов: локальные и/или MCP
 	Memory       *memory.Memory  // nil — без памяти
@@ -112,8 +114,24 @@ type Harness struct {
 const loadSkillTool = "load_skill"
 
 // New собирает харнесс.
-func New(cfg Config) (*Harness, error) {
+func New(cfg Config) (out *Harness, err error) {
+	defer func() {
+		if cfg.Egress != nil {
+			err = egress.SafeError(err)
+		}
+	}()
 	applyDefaults(&cfg)
+	if cfg.LLM != nil && cfg.LLM.Guard != cfg.Egress {
+		return nil, egress.ErrConfig
+	}
+	if cfg.Egress != nil {
+		if cfg.LLM != nil && !cfg.Egress.HasCredential(cfg.LLM.APIKey) {
+			return nil, egress.ErrConfig
+		}
+		if cfg.LLM == nil || cfg.Egress.Validate(cfg.LLM.Destination(), egress.ModelOperation()) != nil {
+			return nil, egress.ErrConfig
+		}
+	}
 	h := &Harness{
 		cfg:     cfg,
 		context: &agentcontext.Context{SystemPrompt: cfg.SystemPrompt},
@@ -123,6 +141,10 @@ func New(cfg Config) (*Harness, error) {
 
 	// Собираем общий список инструментов и запоминаем, кто какой выполняет.
 	for _, box := range cfg.Toolboxes {
+		provider, networkClient := box.(interface{ EgressGuard() *egress.Guard })
+		if networkClient && provider.EgressGuard() != cfg.Egress {
+			return nil, egress.ErrConfig
+		}
 		for _, tool := range box.Tools() {
 			if _, exists := h.byName[tool.Name]; exists {
 				return nil, fmt.Errorf("инструмент %q объявлен дважды", tool.Name)
@@ -132,6 +154,14 @@ func New(cfg Config) (*Harness, error) {
 				// об инструментах, которые меняют данные.
 				h.logf("[харнесс] права «только чтение»: инструмент %s не передаётся модели", tool.Name)
 				continue
+			}
+			if cfg.Egress != nil {
+				if tool.Destination.Kind == "mcp" && !networkClient {
+					return nil, egress.ErrConfig
+				}
+				if cfg.Egress.Validate(tool.Destination, egress.ToolOperation(tool.Name)) != nil {
+					return nil, egress.ErrConfig
+				}
 			}
 			h.route[tool.Name] = box
 			h.byName[tool.Name] = tool
@@ -148,6 +178,7 @@ func New(cfg Config) (*Harness, error) {
 		h.context.SkillsCatalog = cfg.Skills.Catalog()
 		skillTool := tools.Tool{
 			Name:        loadSkillTool,
+			Destination: egress.SkillDestination(),
 			Description: "Загружает полный текст skill с инструкциями по его названию",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -156,6 +187,9 @@ func New(cfg Config) (*Harness, error) {
 				},
 				"required": []string{"name"},
 			},
+		}
+		if cfg.Egress != nil && cfg.Egress.Validate(skillTool.Destination, egress.ToolOperation(loadSkillTool)) != nil {
+			return nil, egress.ErrConfig
 		}
 		h.byName[loadSkillTool] = skillTool
 		h.context.Tools = append(h.context.Tools, skillTool.Spec())
@@ -214,7 +248,12 @@ func (b *budget) exceeded() string {
 }
 
 // Run обрабатывает один запрос пользователя и возвращает ответ.
-func (h *Harness) Run(ctx context.Context, request string) (string, error) {
+func (h *Harness) Run(ctx context.Context, request string) (answer string, err error) {
+	defer func() {
+		if h.cfg.Egress != nil {
+			err = egress.SafeError(err)
+		}
+	}()
 	request = strings.TrimSpace(request)
 
 	// 1. Проверка на валидность.
@@ -371,12 +410,37 @@ func (h *Harness) execute(ctx context.Context, call llm.ToolCall, b *budget) too
 
 	var args map[string]any
 	if strings.TrimSpace(call.Function.Arguments) != "" {
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-			return tools.Result{Content: "параметры не являются корректным JSON: " + err.Error(), IsError: true}
+		if h.cfg.Egress != nil {
+			value, err := h.cfg.Egress.Decode([]byte(call.Function.Arguments))
+			if err != nil {
+				return tools.Result{Content: egress.SafeError(err).Error(), IsError: true}
+			}
+			if value != nil {
+				var ok bool
+				args, ok = value.(map[string]any)
+				if !ok {
+					return tools.Result{Content: "некорректные параметры инструмента", IsError: true}
+				}
+			}
+		} else {
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+				return tools.Result{Content: "параметры не являются корректным JSON: " + err.Error(), IsError: true}
+			}
 		}
 	}
 	if err := tools.ValidateArguments(tool.InputSchema, args); err != nil {
+		if h.cfg.Egress != nil {
+			return tools.Result{Content: "некорректные параметры инструмента", IsError: true}
+		}
 		return tools.Result{Content: "некорректные параметры: " + err.Error(), IsError: true}
+	}
+	if h.cfg.Egress != nil {
+		checkCtx, cancel := context.WithTimeout(ctx, b.remaining())
+		err := h.cfg.Egress.Check(checkCtx, egress.ToolAttempt(tool.Destination, name, args))
+		cancel()
+		if err != nil {
+			return tools.Result{Content: egress.SafeError(err).Error(), IsError: true}
+		}
 	}
 
 	// Встроенный инструмент харнесса: записать выбранный skill в контекст.
@@ -397,6 +461,9 @@ func (h *Harness) execute(ctx context.Context, call llm.ToolCall, b *budget) too
 	// Опасный инструмент выполняется только с подтверждения пользователя.
 	if tool.Dangerous {
 		question := fmt.Sprintf("Модель хочет выполнить %s(%s). Разрешить?", name, call.Function.Arguments)
+		if h.cfg.Egress != nil {
+			question = fmt.Sprintf("Разрешить опасную операцию %s? Параметры скрыты.", name)
+		}
 		waitStart := time.Now()
 		allowed := h.cfg.Confirm != nil && h.cfg.Confirm(question)
 		b.paused += time.Since(waitStart)
@@ -501,6 +568,10 @@ func (h *Harness) checkSecurity(request string) error {
 }
 
 func (h *Harness) logf(format string, args ...any) {
+	if h.cfg.Egress != nil {
+		fmt.Fprintln(h.cfg.Log, "[харнесс] событие выполнения (содержимое скрыто)")
+		return
+	}
 	fmt.Fprintf(h.cfg.Log, format+"\n", args...)
 }
 

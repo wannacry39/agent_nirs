@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "max_bytes": 1048576,
+  "max_depth": 32,
+  "max_nodes": 100000,
+  "secret_env": [],
+  "targets": [
+    {
+      "id": "openrouter",
+      "destination": {"kind": "llm", "address": "https://openrouter.ai/api/v1/chat/completions"},
+      "rules": [{"operation": {"kind": "model_request", "name": "chat_completions"}}]
+    },
+    {
+      "id": "skills",
+      "destination": {"kind": "internal", "address": "harness_context"},
+      "rules": [{"operation": {"kind": "tool_call", "name": "load_skill"}}]
+    },
+    {
+      "id": "weather",
+      "destination": {"kind": "local", "address": "weather"},
+      "rules": [{"operation": {"kind": "tool_call", "name": "get_weather"}}]
+    },
+    {
+      "id": "clock",
+      "destination": {"kind": "local", "address": "clock"},
+      "rules": [{"operation": {"kind": "tool_call", "name": "get_current_time"}}]
+    },
+    {
+      "id": "notes",
+      "destination": {"kind": "local", "address": "notes"},
+      "rules": [{"operation": {"kind": "tool_call", "name": "save_note"}}]
+    },
+    {
+      "id": "mail-demo",
+      "destination": {"kind": "mcp", "address": "http://127.0.0.1:8000/mcp"},
+      "rules": [
+        {"operation": {"kind": "protocol_control", "name": "initialize"}},
+        {"operation": {"kind": "protocol_control", "name": "notifications/initialized"}},
+        {"operation": {"kind": "protocol_control", "name": "tools/list"}},
+        {"operation": {"kind": "protocol_control", "name": "close"}},
+        {"operation": {"kind": "tool_call", "name": "get_all_incoming_messages"}},
+        {
+          "operation": {"kind": "tool_call", "name": "search_messages"},
+          "allow": [{"category": "email", "path": ["query"]}]
+        },
+        {"operation": {"kind": "tool_call", "name": "delete_message"}}
+      ]
+    }
+  ]
+}

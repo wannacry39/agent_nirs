@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/wannacry39/agent_nirs/internal/egress"
 	"github.com/wannacry39/agent_nirs/internal/llm"
 )
 
@@ -35,6 +36,8 @@ type Tool struct {
 	// Это не часть описания для модели (в Spec не попадает), а пометка
 	// для харнесса: он спросит подтверждение у пользователя перед вызовом.
 	Dangerous bool
+	// Destination — метаданные приложения; в Spec и JSON Schema не передаются.
+	Destination egress.Destination
 }
 
 // Spec возвращает описание в формате, который понимает API модели.

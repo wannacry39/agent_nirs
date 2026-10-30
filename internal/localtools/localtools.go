@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wannacry39/agent_nirs/internal/egress"
 	"github.com/wannacry39/agent_nirs/internal/tools"
 )
 
@@ -32,6 +33,7 @@ func New() *tools.LocalToolbox {
 
 	box.Register(tools.Tool{
 		Name:        "get_weather",
+		Destination: egress.Local("weather"),
 		Description: "Возвращает текущую погоду в городе",
 		InputSchema: map[string]any{
 			"type": "object",
@@ -50,6 +52,7 @@ func New() *tools.LocalToolbox {
 
 	box.Register(tools.Tool{
 		Name:        "get_current_time",
+		Destination: egress.Local("clock"),
 		Description: "Возвращает текущие дату и время",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 	}, func(_ context.Context, _ map[string]any) (string, error) {
@@ -58,6 +61,7 @@ func New() *tools.LocalToolbox {
 
 	box.Register(tools.Tool{
 		Name:        "save_note",
+		Destination: egress.Local("notes"),
 		Description: "Сохраняет заметку пользователя в файл заметок",
 		InputSchema: map[string]any{
 			"type": "object",

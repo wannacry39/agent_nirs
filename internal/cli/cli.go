@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/wannacry39/agent_nirs/internal/egress"
 	"github.com/wannacry39/agent_nirs/internal/harness"
 	"github.com/wannacry39/agent_nirs/internal/memory"
 	"github.com/wannacry39/agent_nirs/internal/skills"
@@ -40,7 +41,12 @@ func ReadOnly() bool { return os.Getenv("AGENT_READ_ONLY") == "1" }
 
 // OpenMemory открывает память. При первом запуске файл памяти создаётся
 // из примера data/memory.example.json (сам файл памяти не хранится в git).
-func OpenMemory() (*memory.Memory, error) {
+func OpenMemory() (result *memory.Memory, err error) {
+	defer func() {
+		if os.Getenv("AGENT_EGRESS_POLICY") != "" {
+			err = egress.SafeError(err)
+		}
+	}()
 	if _, err := os.Stat(MemoryPath); errors.Is(err, os.ErrNotExist) {
 		example, err := os.ReadFile(MemoryExamplePath)
 		switch {
@@ -62,7 +68,12 @@ func OpenMemory() (*memory.Memory, error) {
 }
 
 // LoadSkills загружает skills и предупреждает, если их не нашлось.
-func LoadSkills() (*skills.Library, error) {
+func LoadSkills() (result *skills.Library, err error) {
+	defer func() {
+		if os.Getenv("AGENT_EGRESS_POLICY") != "" {
+			err = egress.SafeError(err)
+		}
+	}()
 	library, err := skills.Load(SkillsDir)
 	if err != nil {
 		return nil, err

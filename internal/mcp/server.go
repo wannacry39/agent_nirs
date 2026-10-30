@@ -76,7 +76,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		delete(s.sessions, id)
 		s.mu.Unlock()
-		log.Printf("[MCP-сервер] сессия %s закрыта", id)
+		log.Print("[MCP-сервер] сессия закрыта")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	default:
@@ -132,7 +132,7 @@ func (s *Server) handle(ctx context.Context, w http.ResponseWriter, req Request)
 		}
 		sessionID := s.newSession()
 		w.Header().Set(headerSessionID, sessionID)
-		log.Printf("[MCP-сервер] новая сессия %s", sessionID)
+		log.Print("[MCP-сервер] новая сессия")
 		return initializeResult{
 			ProtocolVersion: ProtocolVersion,
 			Capabilities:    map[string]any{"tools": map[string]any{}},
@@ -166,7 +166,7 @@ func (s *Server) handle(ctx context.Context, w http.ResponseWriter, req Request)
 		if err := tools.ValidateArguments(tool.Info.InputSchema, params.Arguments); err != nil {
 			return nil, &RPCError{codeInvalidParams, "некорректные параметры: " + err.Error()}
 		}
-		log.Printf("[MCP-сервер] tools/call: выполняю %s %v", params.Name, params.Arguments)
+		log.Print("[MCP-сервер] tools/call: выполняю инструмент (аргументы скрыты)")
 		text, err := tool.Handler(ctx, params.Arguments)
 		if err != nil {
 			// Ошибка выполнения — это результат инструмента, а не ошибка протокола.

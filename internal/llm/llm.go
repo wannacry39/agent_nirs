@@ -34,6 +34,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wannacry39/agent_nirs/internal/egress"
 )
 
 // Message — одно сообщение в контексте модели.
@@ -89,7 +91,8 @@ type Client struct {
 	// «слишком много запросов» (429) или временной ошибкой (5xx).
 	// Бесплатные тарифы часто так отвечают при нагрузке.
 	Retries int
-	Log     io.Writer // куда писать о повторах; nil — никуда
+	Log     io.Writer     // куда писать о повторах; nil — никуда
+	Guard   *egress.Guard // nil — учебный режим без контроля исходящих данных
 }
 
 // NewFromEnv создаёт клиент по переменным окружения:
@@ -123,7 +126,12 @@ func (c *Client) CompleteAnswer(ctx context.Context, messages []Message, tools [
 	return c.complete(ctx, messages, tools, choice)
 }
 
-func (c *Client) complete(ctx context.Context, messages []Message, tools []ToolSpec, toolChoice string) (Response, error) {
+func (c *Client) complete(ctx context.Context, messages []Message, tools []ToolSpec, toolChoice string) (response Response, err error) {
+	defer func() {
+		if c.Guard != nil {
+			err = egress.SafeError(err)
+		}
+	}()
 	body, err := json.Marshal(struct {
 		Model      string     `json:"model"`
 		Messages   []Message  `json:"messages"`
@@ -134,7 +142,7 @@ func (c *Client) complete(ctx context.Context, messages []Message, tools []ToolS
 		return Response{}, err
 	}
 
-	raw, err := c.post(ctx, body)
+	raw, err := c.post(ctx, c.Destination(), body)
 	if err != nil {
 		return Response{}, err
 	}
@@ -175,9 +183,23 @@ func (c *Client) complete(ctx context.Context, messages []Message, tools []ToolS
 // post отправляет запрос и повторяет его при 429 и временных ошибках 5xx.
 // Пауза берётся из заголовка Retry-After, если провайдер его прислал,
 // иначе растёт: 2, 4, 8 секунд.
-func (c *Client) post(ctx context.Context, body []byte) ([]byte, error) {
-	url := strings.TrimRight(c.BaseURL, "/") + "/chat/completions"
+func (c *Client) post(ctx context.Context, destination egress.Destination, body []byte) ([]byte, error) {
+	url := destination.Address
+	client := c.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Minute}
+	}
+	if c.Guard != nil {
+		copyClient := *client
+		copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copyClient
+	}
 	for attempt := 0; ; attempt++ {
+		if c.Guard != nil {
+			if err := c.checkBody(ctx, body, destination); err != nil {
+				return nil, err
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -194,7 +216,7 @@ func (c *Client) post(ctx context.Context, body []byte) ([]byte, error) {
 			req.Header.Set("X-Title", "agent_nirs")
 		}
 
-		resp, err := c.HTTP.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("запрос к LLM: %w", err)
 		}

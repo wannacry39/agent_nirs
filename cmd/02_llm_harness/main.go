@@ -27,13 +27,22 @@ import (
 )
 
 func main() {
+	guard, err := cli.LoadSecurity()
+	if err != nil {
+		cli.Fatal(err)
+	}
+	model := llm.NewFromEnv()
+	if err := cli.BindModel(model, guard); err != nil {
+		cli.Fatal(err)
+	}
 	mem, err := cli.OpenMemory()
 	if err != nil {
 		cli.Fatal(err)
 	}
 
 	h, err := harness.New(harness.Config{
-		LLM:          llm.NewFromEnv(),
+		LLM:          model,
+		Egress:       guard,
 		SystemPrompt: prompt.Build(false, false),
 		Memory:       mem,
 		ReadOnly:     cli.ReadOnly(),
