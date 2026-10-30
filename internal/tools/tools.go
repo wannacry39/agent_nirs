@@ -123,3 +123,37 @@ func (b *LocalToolbox) Call(ctx context.Context, name string, args map[string]an
 	}
 	return Result{Content: content}
 }
+
+// Subset — часть инструментов другого Toolbox. Нужна, чтобы дать субагенту
+// только те инструменты, которые нужны для его роли.
+func Subset(box Toolbox, names ...string) Toolbox {
+	allowed := map[string]bool{}
+	for _, name := range names {
+		allowed[name] = true
+	}
+	return &subset{box: box, allowed: allowed}
+}
+
+type subset struct {
+	box     Toolbox
+	allowed map[string]bool
+}
+
+func (s *subset) Name() string { return s.box.Name() }
+
+func (s *subset) Tools() []Tool {
+	var list []Tool
+	for _, tool := range s.box.Tools() {
+		if s.allowed[tool.Name] {
+			list = append(list, tool)
+		}
+	}
+	return list
+}
+
+func (s *subset) Call(ctx context.Context, name string, args map[string]any) Result {
+	if !s.allowed[name] {
+		return Result{Content: fmt.Sprintf("инструмент %q не найден", name), IsError: true}
+	}
+	return s.box.Call(ctx, name, args)
+}
